@@ -31,6 +31,7 @@ async function run() {
 
     const productsCollection = db.collection("products");
     const cartCollection = db.collection("addCard");
+
     // Product Fetch Route
     app.get("/products", async (req, res) => {
       try {
@@ -81,6 +82,49 @@ async function run() {
       }
 
       const result = await productsCollection.insertOne(product);
+      res.send(result);
+    });
+
+    // update ar jonn
+
+    // ✅ ঠিক করা ব্যাকএন্ড কোড
+    app.patch("/products/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid ID format" });
+        }
+
+        const filter = { _id: new ObjectId(id) };
+        const updatedDoc = req.body;
+
+        delete updatedDoc._id;
+
+        const result = await productsCollection.updateOne(filter, {
+          $set: updatedDoc,
+        });
+
+        if (result.modifiedCount > 0 || result.matchedCount > 0) {
+          res.send(result);
+        } else {
+          res
+            .status(404)
+            .send({ message: "Product not found or no change made" });
+        }
+      } catch (error) {
+        console.error("Update Error:", error);
+        res
+          .status(500)
+          .send({ message: "Internal Server Error", error: error.message });
+      }
+    });
+
+    // Product Delete API
+    app.delete("/products/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await productsCollection.deleteOne(query);
       res.send(result);
     });
 
