@@ -1,7 +1,8 @@
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+
 dotenv.config();
 
 const app = express();
@@ -26,87 +27,89 @@ async function run() {
     // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
 
-    const db = client.db("ecommerce");
+    const db = client.db("ecommerceDb");
 
     const productsCollection = db.collection("products");
-
-    app.get("/api/products", async (req, res) => {
+    const cartCollection = db.collection("addCard");
+    // Product Fetch Route
+    app.get("/products", async (req, res) => {
       try {
-        const { search, category, page = 1, limit = 10, sort } = req.query;
-
-        const query = {};
-
-        // 🔎 search by name
-        if (search) {
-          query.name = { $regex: search, $options: "i" };
-        }
-
-        // 🏷 category filter
-        if (category) {
-          query.category = category;
-        }
-
-        // sorting
-        let sortOption = {};
-        if (sort === "low") sortOption.price = 1;
-        if (sort === "high") sortOption.price = -1;
-
-        const skip = (parseInt(page) - 1) * parseInt(limit);
-
-        const products = await productsCollection
-          .find(query)
-          .sort(sortOption)
-          .skip(skip)
-          .limit(parseInt(limit))
+        // .sort({ _id: -1 }) ensures the last product is at the top
+        const result = await productsCollection
+          .find()
+          .sort({ _id: -1 })
           .toArray();
-
-        const total = await productsCollection.countDocuments(query);
-
-        res.send({
-          total,
-          page: parseInt(page),
-          totalPages: Math.ceil(total / limit),
-          products,
-        });
+        res.send(result);
       } catch (error) {
-        res.status(500).send({ message: "Failed to fetch products" });
+        res.status(500).send({ message: "Error fetching products", error });
       }
     });
 
-    app.post("/api/products", async (req, res) => {
+    app.get("/products/:id", async (req, res) => {
       try {
-        const { name, price, category, image, stock, description } = req.body;
+        const id = req.params.id;
 
-        // ✅ basic validation
-        if (!name || !price || !category) {
-          return res.status(400).send({
-            success: false,
-            message: "Name, price and category are required",
-          });
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid ID format" });
         }
 
-        const newProduct = {
-          name,
-          price: Number(price),
-          category,
-          image: image || "",
-          stock: stock || 0,
-          description: description || "",
-          createdAt: new Date(),
-        };
+        const query = { _id: new ObjectId(id) };
+        const result = await productsCollection.findOne(query);
 
-        const result = await productsCollection.insertOne(newProduct);
+        if (!result) {
+          return res.status(404).send({ message: "Product not found" });
+        }
 
-        res.status(201).send({
-          success: true,
-          message: "Product created successfully",
-          insertedId: result.insertedId,
-        });
+        res.send(result);
       } catch (error) {
-        res.status(500).send({
-          success: false,
-          message: "Server error while creating product",
-        });
+        console.error("Backend Error:", error);
+        res
+          .status(500)
+          .send({ message: "Internal Server Error", error: error.message });
+      }
+    });
+
+    // --- Product Post API ---
+    app.post("/products", async (req, res) => {
+      const product = req.body;
+
+      // Validation (Optional but recommended)
+      if (!product.name || !product.price) {
+        return res
+          .status(400)
+          .send({ message: "Product name and price are required" });
+      }
+
+      const result = await productsCollection.insertOne(product);
+      res.send(result);
+    });
+
+    // Card calloctions
+
+    app.post("/carts", async (req, res) => {
+      const cartItem = req.body;
+      const result = await cartCollection.insertOne(cartItem);
+      res.send(result);
+    });
+
+    app.get("/carts", async (req, res) => {
+      const email = req.query.email;
+      const query = { email: email };
+      const result = await cartCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    app.delete("/carts/:id", async (req, res) => {
+      const id = req.params.id;
+      try {
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid ID Format" });
+        }
+        const query = { _id: new ObjectId(id) };
+        const result = await cartCollection.deleteOne(query);
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: "Server error" });
       }
     });
 
