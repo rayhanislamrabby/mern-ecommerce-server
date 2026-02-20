@@ -38,7 +38,7 @@ async function run() {
     const cartCollection = db.collection("addCard");
     const orderCollection = db.collection("orders");
     const couponCollection = db.collection("coupons");
-
+    const userCollection = db.collection("users");
     // Product Fetch Route
     app.get("/products", async (req, res) => {
       try {
@@ -159,6 +159,35 @@ async function run() {
       }
     });
 
+    // ✅ FIRST — specific route
+    app.delete("/carts/clear", async (req, res) => {
+      console.log("QUERY:", req.query);
+
+      const email = req.query.email;
+
+      if (!email) {
+        return res.status(400).send({ message: "Email missing" });
+      }
+
+      const result = await cartCollection.deleteMany({ email });
+      res.send(result);
+    });
+
+    // ✅ SECOND — dynamic route
+    app.delete("/carts/:id", async (req, res) => {
+      const id = req.params.id;
+      try {
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid ID Format" });
+        }
+        const query = { _id: new ObjectId(id) };
+        const result = await cartCollection.deleteOne(query);
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: "Server error" });
+      }
+    });
+
     // admin cupon code api
 
     app.post("/admin/add-coupon", async (req, res) => {
@@ -233,7 +262,7 @@ async function run() {
 
     // 3. DELETE COUPON (DELETE)
 
-    app.delete("/admin/coupons/:id", async (req, res) => {
+    app.delete("/coupons/delete/:id", async (req, res) => {
       try {
         const id = req.params.id;
         const query = { _id: new ObjectId(id) };
@@ -319,6 +348,32 @@ async function run() {
       }
     });
 
+    app.patch("/coupons/update-count/:code", async (req, res) => {
+      try {
+        const code = req.params.code.toUpperCase();
+        const filter = { code: code };
+
+        const updateDoc = {
+          $inc: { usedCount: 1 },
+        };
+
+        const result = await couponCollection.updateOne(filter, updateDoc);
+
+        if (result.modifiedCount > 0) {
+          res.send({ success: true, message: "Coupon usage updated!" });
+        } else {
+          res
+            .status(404)
+            .send({ success: false, message: "Coupon code not found!" });
+        }
+      } catch (error) {
+        console.error(error);
+        res
+          .status(500)
+          .send({ message: "Server error while updating coupon count" });
+      }
+    });
+
     // Order Save API
     app.post("/orders", async (req, res) => {
       const order = req.body;
@@ -348,6 +403,148 @@ async function run() {
       });
 
       res.send({ clientSecret: paymentIntent.client_secret });
+    });
+
+    // Database Collection Name: orderCollection
+
+    /**
+     * 1. Update Order Delivery Status
+     * Route: /orders/:id
+     * Method: PATCH
+     */
+    app.patch("/orders/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const { deliveryStatus } = req.body; // Frontend theke 'confirmed' ba 'success' asbe
+
+        // ID valid kina check kora (Optional but recommended)
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid Order ID" });
+        }
+
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = {
+          $set: {
+            deliveryStatus: deliveryStatus,
+            // Jodi success hoy, tobe ekta delivery date o add kore rakhte paren
+            ...(deliveryStatus === "success" && { deliveredAt: new Date() }),
+          },
+        };
+
+        const result = await orderCollection.updateOne(filter, updateDoc);
+
+        if (result.modifiedCount > 0) {
+          res.send({
+            success: true,
+            message: `Status updated to ${deliveryStatus}`,
+          });
+        } else {
+          res.status(404).send({
+            success: false,
+            message: "Order not found or no change made",
+          });
+        }
+      } catch (error) {
+        console.error("Error updating order:", error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
+    /**
+     * 2. Get All Orders (Existing but ensure it includes paymentStatus)
+     * Route: /orders
+     * Method: GET
+     */
+    app.get("/orders", async (req, res) => {
+      const result = await orderCollection
+        .find()
+        .sort({ orderDate: -1 })
+        .toArray();
+      res.send(result);
+    });
+
+    // --- 1. User Registration / Save (Default Role: User) ---
+    app.post("/users", async (req, res) => {
+      const user = req.body;
+
+      // Check if user already exists
+      const query = { email: user.email };
+      const existingUser = await userCollection.findOne(query);
+      if (existingUser) {
+        return res.send({ message: "User already exists", insertedId: null });
+      }
+
+      // Double check role on backend for security
+      const newUser = {
+        ...user,
+        role: "user", // Default Role
+        createdAt: new Date(),
+      };
+
+      const result = await userCollection.insertOne(newUser);
+      res.send(result);
+    });
+
+    // --- 2. Make Admin
+    app.patch("/users/admin/:id", async (req, res) => {
+      const id = req.params.id;
+      const filter = { _id: new ObjectId(id) };
+      const updatedDoc = {
+        $set: {
+          role: "admin",
+        },
+      };
+      const result = await userCollection.updateOne(filter, updatedDoc);
+      res.send(result);
+    });
+
+    // --- 3. Remove Admin (Demote back to User) ---
+    app.patch("/users/user/:id", async (req, res) => {
+      const id = req.params.id;
+      const filter = { _id: new ObjectId(id) };
+      const updatedDoc = {
+        $set: {
+          role: "user",
+        },
+      };
+      const result = await userCollection.updateOne(filter, updatedDoc);
+      res.send(result);
+    });
+
+    // --- 4. Get All Users
+    app.get("/users", async (req, res) => {
+      const result = await userCollection.find().toArray();
+      res.send(result);
+    });
+
+    // Search email and make admin
+
+    app.get("/users/search", async (req, res) => {
+      const email = req.query.email;
+
+      const query = { email: { $regex: email, $options: "i" } };
+      const result = await userCollection.findOne(query);
+      res.send(result);
+    });
+
+    app.get("/users/admin/:email", async (req, res) => {
+      try {
+        const email = req.params.email;
+
+        if (!email) {
+          return res.status(400).send({ message: "Email is required" });
+        }
+
+        const user = await userCollection.findOne({ email });
+
+        if (!user) {
+          return res.status(404).send({ message: "user not found" });
+        }
+        res.send({ role: user.role || "user" });
+      } catch (error) {
+        console.log("error user role:", error);
+        res.status(500).send({ message: "Filed to get role " });
+      }
     });
 
     // Send a ping to confirm a successful connection
