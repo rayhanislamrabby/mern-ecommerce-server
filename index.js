@@ -1,23 +1,28 @@
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
-
+const admin = require("firebase-admin");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 dotenv.config();
 
 const app = express();
 
-// middleware
 app.use(cors());
 app.use(express.json());
 
 // stripe kye
-
 const stripe = require("stripe")(process.env.PAYMENT_GATEWAY_KEY);
 // mongodb kye
-
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.gdoalz6.mongodb.net/?appName=Cluster0`;
+// firebase 
+const serviceAccount = require("./firebase_admin_kye.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+
+
 
 const client = new MongoClient(uri, {
   serverApi: {
@@ -39,6 +44,27 @@ async function run() {
     const orderCollection = db.collection("orders");
     const couponCollection = db.collection("coupons");
     const userCollection = db.collection("users");
+
+    // custome middelwear
+
+    const verifyFirebaseToken = async (req, res, next) => {
+      const authHeader = req.headers.authorization;
+
+      if (!authHeader) {
+        return res.status(401).send({ message: "Unauthorized" });
+      }
+
+      const token = authHeader.split(" ")[1];
+
+      try {
+        const decoded = await admin.auth().verifyIdToken(token);
+        req.user = decoded;
+        next();
+      } catch (error) {
+        res.status(401).send({ message: "Invalid Firebase token" });
+      }
+    };
+
     // Product Fetch Route
     app.get("/products", async (req, res) => {
       try {
@@ -159,7 +185,7 @@ async function run() {
       }
     });
 
-    // ✅ FIRST — specific route
+    // FIRST — specific route
     app.delete("/carts/clear", async (req, res) => {
       console.log("QUERY:", req.query);
 
@@ -173,7 +199,7 @@ async function run() {
       res.send(result);
     });
 
-    // ✅ SECOND — dynamic route
+    //  SECOND — dynamic route
     app.delete("/carts/:id", async (req, res) => {
       const id = req.params.id;
       try {
@@ -248,7 +274,7 @@ async function run() {
 
     // 2. GET ALL COUPONS FOR ADMIN (GET)
 
-    app.get("/admin/coupons", async (req, res) => {
+    app.get("/admin/coupons", verifyFirebaseToken, async (req, res) => {
       try {
         const result = await couponCollection
           .find()
@@ -391,26 +417,22 @@ async function run() {
       }
     });
 
-    // pyment intern stripe
-
-    app.post("/create-payment-intent", async (req, res) => {
-      const { price } = req.body;
-
-      const paymentIntent = await stripe.paymentIntents.create({
-        amount: Math.round(price * 100),
-        currency: "usd",
-        payment_method_types: ["card"],
-      });
-
-      res.send({ clientSecret: paymentIntent.client_secret });
+    /**
+    Get All Orders (Existing but ensure it includes paymentStatus)
+   
+    
+     */
+    app.get("/orders", verifyFirebaseToken, async (req, res) => {
+      const result = await orderCollection
+        .find()
+        .sort({ orderDate: -1 })
+        .toArray();
+      res.send(result);
     });
-
-    // Database Collection Name: orderCollection
 
     /**
      * 1. Update Order Delivery Status
-     * Route: /orders/:id
-     * Method: PATCH
+     
      */
     app.patch("/orders/:id", async (req, res) => {
       try {
@@ -450,19 +472,6 @@ async function run() {
       }
     });
 
-    /**
-     * 2. Get All Orders (Existing but ensure it includes paymentStatus)
-     * Route: /orders
-     * Method: GET
-     */
-    app.get("/orders", async (req, res) => {
-      const result = await orderCollection
-        .find()
-        .sort({ orderDate: -1 })
-        .toArray();
-      res.send(result);
-    });
-
     // --- 1. User Registration / Save (Default Role: User) ---
     app.post("/users", async (req, res) => {
       const user = req.body;
@@ -486,7 +495,7 @@ async function run() {
     });
 
     // --- 2. Make Admin
-    app.patch("/users/admin/:id", async (req, res) => {
+    app.patch("/users/admin/:id",  async (req, res) => {
       const id = req.params.id;
       const filter = { _id: new ObjectId(id) };
       const updatedDoc = {
@@ -545,6 +554,20 @@ async function run() {
         console.log("error user role:", error);
         res.status(500).send({ message: "Filed to get role " });
       }
+    });
+
+    // pyment intern stripe
+
+    app.post("/create-payment-intent", async (req, res) => {
+      const { price } = req.body;
+
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: Math.round(price * 100),
+        currency: "usd",
+        payment_method_types: ["card"],
+      });
+
+      res.send({ clientSecret: paymentIntent.client_secret });
     });
 
     // Send a ping to confirm a successful connection
