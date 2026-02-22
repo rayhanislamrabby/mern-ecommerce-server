@@ -27,7 +27,7 @@ admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 
-const client = new MongoClient(uri, { 
+const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
     strict: true,
@@ -38,7 +38,7 @@ const client = new MongoClient(uri, {
 async function run() {
   try {
     // conect tha client to tha sarver
-    // await client.connect();
+    await client.connect();
 
     const db = client.db("ecommerceDb");
 
