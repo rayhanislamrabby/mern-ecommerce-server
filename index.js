@@ -776,18 +776,26 @@ async function run() {
     );
 
     // Send a ping to confirm a successful connection
+  
 
-    // await client.db("admin").command({ ping: 1 });
-    // console.log(
-    //   "Pinged your deployment. You successfully connected to MongoDB!",
-    // );
+app.get("/", (req, res) => {
+  res.send("Server is running 🚀");
+});
+
+
+    await client.db("admin").command({ ping: 1 });
+    console.log(
+      "Pinged your deployment. You successfully connected to MongoDB!",
+    );
   } finally {
   }
 }
 run().catch(console.dir);
+
 
 // start server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
