@@ -15,16 +15,19 @@ app.use(express.json());
 const stripe = require("stripe")(process.env.PAYMENT_GATEWAY_KEY);
 // mongodb kye
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.gdoalz6.mongodb.net/?appName=Cluster0`;
-// firebase 
-const serviceAccount = require("./firebase_admin_kye.json");
+// firebase
+
+const decodedkye = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
+  "utf-8",
+);
+
+const serviceAccount = JSON.parse(decodedkye);
 
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
+  credential: admin.credential.cert(serviceAccount),
 });
 
-
-
-const client = new MongoClient(uri, {
+const client = new MongoClient(uri, { 
   serverApi: {
     version: ServerApiVersion.v1,
     strict: true,
@@ -34,8 +37,8 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    // Connect the client to the server	(optional starting in v4.7)
-    await client.connect();
+    // conect tha client to tha sarver
+    // await client.connect();
 
     const db = client.db("ecommerceDb");
 
@@ -50,19 +53,36 @@ async function run() {
     const verifyFirebaseToken = async (req, res, next) => {
       const authHeader = req.headers.authorization;
 
-      if (!authHeader) {
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
         return res.status(401).send({ message: "Unauthorized" });
       }
 
       const token = authHeader.split(" ")[1];
+
+      if (!token) {
+        return res.status(401).send({ message: "Unauthorized" });
+      }
 
       try {
         const decoded = await admin.auth().verifyIdToken(token);
         req.user = decoded;
         next();
       } catch (error) {
-        res.status(401).send({ message: "Invalid Firebase token" });
+        return res.status(401).send({ message: "Invalid Firebase token" });
       }
+    };
+    //  verify admin
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.user.email;
+
+      const query = { email };
+
+      const user = await userCollection.findOne(query);
+
+      if (!user || user.role !== "admin") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      next();
     };
 
     // Product Fetch Route
@@ -116,45 +136,55 @@ async function run() {
       res.send(result);
     });
 
-    app.patch("/products/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
+    app.patch(
+      "/products/:id",
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
 
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).send({ message: "Invalid ID format" });
-        }
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).send({ message: "Invalid ID format" });
+          }
 
-        const filter = { _id: new ObjectId(id) };
-        const updatedDoc = req.body;
+          const filter = { _id: new ObjectId(id) };
+          const updatedDoc = req.body;
 
-        delete updatedDoc._id;
+          delete updatedDoc._id;
 
-        const result = await productsCollection.updateOne(filter, {
-          $set: updatedDoc,
-        });
+          const result = await productsCollection.updateOne(filter, {
+            $set: updatedDoc,
+          });
 
-        if (result.modifiedCount > 0 || result.matchedCount > 0) {
-          res.send(result);
-        } else {
+          if (result.modifiedCount > 0 || result.matchedCount > 0) {
+            res.send(result);
+          } else {
+            res
+              .status(404)
+              .send({ message: "Product not found or no change made" });
+          }
+        } catch (error) {
+          console.error("Update Error:", error);
           res
-            .status(404)
-            .send({ message: "Product not found or no change made" });
+            .status(500)
+            .send({ message: "Internal Server Error", error: error.message });
         }
-      } catch (error) {
-        console.error("Update Error:", error);
-        res
-          .status(500)
-          .send({ message: "Internal Server Error", error: error.message });
-      }
-    });
+      },
+    );
 
     // Product Delete API
-    app.delete("/products/:id", async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await productsCollection.deleteOne(query);
-      res.send(result);
-    });
+    app.delete(
+      "/products/:id",
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const result = await productsCollection.deleteOne(query);
+        res.send(result);
+      },
+    );
 
     // Card calloctions
 
@@ -169,20 +199,6 @@ async function run() {
       const query = { email: email };
       const result = await cartCollection.find(query).toArray();
       res.send(result);
-    });
-
-    app.delete("/carts/:id", async (req, res) => {
-      const id = req.params.id;
-      try {
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).send({ message: "Invalid ID Format" });
-        }
-        const query = { _id: new ObjectId(id) };
-        const result = await cartCollection.deleteOne(query);
-        res.send(result);
-      } catch (error) {
-        res.status(500).send({ message: "Server error" });
-      }
     });
 
     // FIRST — specific route
@@ -216,15 +232,20 @@ async function run() {
 
     // admin cupon code api
 
-    app.post("/admin/add-coupon", async (req, res) => {
-      const newCoupon = req.body;
+    app.post(
+      "/admin/add-coupon",
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        const newCoupon = req.body;
 
-      newCoupon.usedCount = 0;
-      const result = await couponCollection.insertOne(newCoupon);
-      res.send(result);
-    });
+        newCoupon.usedCount = 0;
+        const result = await couponCollection.insertOne(newCoupon);
+        res.send(result);
+      },
+    );
+    // . VERIFY & APPLY COUPON
 
-    // --- Coupon Validation API ---
     app.get("/coupons/:code", async (req, res) => {
       try {
         const code = req.params.code;
@@ -274,155 +295,187 @@ async function run() {
 
     // 2. GET ALL COUPONS FOR ADMIN (GET)
 
-    app.get("/admin/coupons", verifyFirebaseToken, async (req, res) => {
-      try {
-        const result = await couponCollection
-          .find()
-          .sort({ _id: -1 })
-          .toArray();
-        res.send(result);
-      } catch (error) {
-        res.status(500).send({ message: "Internal Server Error" });
-      }
-    });
+    app.get(
+      "/admin/coupons",
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const result = await couponCollection
+            .find()
+            .sort({ _id: -1 })
+            .toArray();
+          res.send(result);
+        } catch (error) {
+          res.status(500).send({ message: "Internal Server Error" });
+        }
+      },
+    );
 
     // 3. DELETE COUPON (DELETE)
 
-    app.delete("/coupons/delete/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-        const query = { _id: new ObjectId(id) };
-        const result = await couponCollection.deleteOne(query);
-        res.send(result);
-      } catch (error) {
-        res.status(500).send({ message: "Delete failed" });
-      }
-    });
+    app.delete(
+      "/coupons/delete/:id",
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
+          const query = { _id: new ObjectId(id) };
+          const result = await couponCollection.deleteOne(query);
+          res.send(result);
+        } catch (error) {
+          res.status(500).send({ message: "Delete failed" });
+        }
+      },
+    );
 
     // 4. UPDATE COUPON DETAILS (PATCH)
+    app.patch(
+      "/admin/coupons/update/:id",
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
 
-    app.patch("/admin/coupons/update/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-        const filter = { _id: new ObjectId(id) };
-        const updatedDoc = {
-          $set: {
-            code: req.body.code.toUpperCase(),
-            discountValue: req.body.discountValue,
-            minPurchase: req.body.minPurchase,
-            expiryDate: req.body.expiryDate,
-            isActive: req.body.isActive,
-          },
-        };
-        const result = await couponCollection.updateOne(filter, updatedDoc);
-        res.send(result);
-      } catch (error) {
-        res.status(500).send({ message: "Update failed" });
-      }
-    });
+          // 🔥 normalize type
+          let type = (req.body.discountType || "").toLowerCase();
+          if (type === "percentage") type = "percent";
 
+          const filter = { _id: new ObjectId(id) };
+
+          const updatedDoc = {
+            $set: {
+              code: req.body.code.toUpperCase(),
+              discountType: type,
+              discountValue: parseFloat(req.body.discountValue),
+              minPurchase: parseFloat(req.body.minPurchase),
+              usageLimit: parseInt(req.body.usageLimit),
+              expiryDate: req.body.expiryDate,
+              isActive: req.body.isActive,
+            },
+          };
+
+          const result = await couponCollection.updateOne(filter, updatedDoc);
+          res.send(result);
+        } catch (error) {
+          res.status(500).send({ message: "Update failed" });
+        }
+      },
+    );
     // 5. TOGGLE STATUS ONLY (PATCH)
 
-    app.patch("/admin/coupons/status/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-        const filter = { _id: new ObjectId(id) };
-        const updatedDoc = {
-          $set: { isActive: req.body.isActive },
-        };
-        const result = await couponCollection.updateOne(filter, updatedDoc);
-        res.send(result);
-      } catch (error) {
-        res.status(500).send({ message: "Status update failed" });
-      }
-    });
+    app.patch(
+      "/admin/coupons/status/:id",
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
+          const filter = { _id: new ObjectId(id) };
+          const updatedDoc = {
+            $set: { isActive: req.body.isActive },
+          };
+          const result = await couponCollection.updateOne(filter, updatedDoc);
+          res.send(result);
+        } catch (error) {
+          res.status(500).send({ message: "Status update failed" });
+        }
+      },
+    );
 
     // 6. VERIFY & APPLY COUPON
 
-    app.get("/coupons/:code", async (req, res) => {
-      try {
-        const code = req.params.code.toUpperCase();
-        const amount = parseFloat(req.query.amount);
+    app.patch(
+      "/coupons/update-count/:code",
 
-        const coupon = await couponCollection.findOne({ code, isActive: true });
+      async (req, res) => {
+        try {
+          const code = req.params.code.toUpperCase();
+          const filter = { code: code };
 
-        if (!coupon)
-          return res
-            .status(404)
-            .send({ message: "Invalid or Inactive Coupon" });
+          const updateDoc = {
+            $inc: { usedCount: 1 },
+          };
 
-        // Expiry date check
-        if (new Date(coupon.expiryDate) < new Date()) {
-          return res.status(400).send({ message: "Coupon has expired!" });
-        }
+          const result = await couponCollection.updateOne(filter, updateDoc);
 
-        // Usage limit check
-        if (coupon.usedCount >= coupon.usageLimit) {
-          return res.status(400).send({ message: "Usage limit reached!" });
-        }
-
-        // Min purchase check
-        if (amount < coupon.minPurchase) {
-          return res.status(400).send({
-            message: `Minimum purchase ৳${coupon.minPurchase} required`,
-          });
-        }
-
-        res.send(coupon);
-      } catch (error) {
-        res.status(500).send({ message: "Server error" });
-      }
-    });
-
-    app.patch("/coupons/update-count/:code", async (req, res) => {
-      try {
-        const code = req.params.code.toUpperCase();
-        const filter = { code: code };
-
-        const updateDoc = {
-          $inc: { usedCount: 1 },
-        };
-
-        const result = await couponCollection.updateOne(filter, updateDoc);
-
-        if (result.modifiedCount > 0) {
-          res.send({ success: true, message: "Coupon usage updated!" });
-        } else {
+          if (result.modifiedCount > 0) {
+            res.send({ success: true, message: "Coupon usage updated!" });
+          } else {
+            res
+              .status(404)
+              .send({ success: false, message: "Coupon code not found!" });
+          }
+        } catch (error) {
+          console.error(error);
           res
-            .status(404)
-            .send({ success: false, message: "Coupon code not found!" });
+            .status(500)
+            .send({ message: "Server error while updating coupon count" });
         }
-      } catch (error) {
-        console.error(error);
-        res
-          .status(500)
-          .send({ message: "Server error while updating coupon count" });
-      }
-    });
+      },
+    );
 
     // Order Save API
+
     app.post("/orders", async (req, res) => {
       const order = req.body;
 
       try {
-        // 1. Database-e order save
+        if (!order || !order.items || !order.totalAmount) {
+          return res.status(400).send({ message: "Invalid order data" });
+        }
+
         const result = await orderCollection.insertOne(order);
 
-        if (result.insertedId) {
-          res.status(201).send(result);
+        if (
+          result.insertedId &&
+          Array.isArray(order.cartIds) &&
+          order.cartIds.length > 0
+        ) {
+          const validCartIds = order.cartIds
+            .filter((id) => id && ObjectId.isValid(id))
+            .map((id) => new ObjectId(id));
+
+          if (validCartIds.length > 0) {
+            await cartCollection.deleteMany({ _id: { $in: validCartIds } });
+          }
         }
+
+        if (order.couponCode) {
+          const coupon = await couponCollection.findOne({
+            code: order.couponCode.toUpperCase(),
+            isActive: true,
+          });
+
+          if (coupon) {
+            const now = new Date();
+            const expiry = new Date(coupon.expiryDate);
+
+            if (now <= expiry && coupon.usedCount < coupon.usageLimit) {
+              await couponCollection.updateOne(
+                { code: coupon.code },
+                {
+                  $inc: { usedCount: 1 },
+                  $addToSet: { usedBy: order.email || "unknown" },
+                },
+              );
+            }
+          }
+        }
+
+        res.status(201).send(result);
       } catch (error) {
-        console.error("Order Save Error:", error);
-        res.status(500).send({ message: "Failed to place order", error });
+        console.error("CRITICAL ORDER ERROR:", error);
+        res.status(500).send({
+          message: "Order saving failed on server",
+          error: error.message,
+        });
       }
     });
 
-    /**
-    Get All Orders (Existing but ensure it includes paymentStatus)
-   
-    
-     */
-    app.get("/orders", verifyFirebaseToken, async (req, res) => {
+    app.get("/orders", verifyFirebaseToken, verifyAdmin, async (req, res) => {
       const result = await orderCollection
         .find()
         .sort({ orderDate: -1 })
@@ -430,46 +483,52 @@ async function run() {
       res.send(result);
     });
 
-    /**
-     * 1. Update Order Delivery Status
-     
-     */
-    app.patch("/orders/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-        const { deliveryStatus } = req.body; // Frontend theke 'confirmed' ba 'success' asbe
+    app.patch(
+      "/orders/:id",
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
+          const { deliveryStatus } = req.body;
 
-        // ID valid kina check kora (Optional but recommended)
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).send({ message: "Invalid Order ID" });
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).send({ message: "Invalid Order ID" });
+          }
+
+          const filter = { _id: new ObjectId(id) };
+          const updateDoc = {
+            $set: {
+              deliveryStatus: deliveryStatus,
+
+              ...(deliveryStatus === "success" && { deliveredAt: new Date() }),
+            },
+          };
+
+          const result = await orderCollection.updateOne(filter, updateDoc);
+
+          if (result.modifiedCount > 0) {
+            res.send({
+              success: true,
+              message: `Status updated to ${deliveryStatus}`,
+            });
+          } else {
+            res.status(404).send({
+              success: false,
+              message: "Order not found or no change made",
+            });
+          }
+        } catch (error) {
+          console.error("Error updating order:", error);
+          res.status(500).send({ message: "Internal Server Error" });
         }
+      },
+    );
 
-        const filter = { _id: new ObjectId(id) };
-        const updateDoc = {
-          $set: {
-            deliveryStatus: deliveryStatus,
-            // Jodi success hoy, tobe ekta delivery date o add kore rakhte paren
-            ...(deliveryStatus === "success" && { deliveredAt: new Date() }),
-          },
-        };
-
-        const result = await orderCollection.updateOne(filter, updateDoc);
-
-        if (result.modifiedCount > 0) {
-          res.send({
-            success: true,
-            message: `Status updated to ${deliveryStatus}`,
-          });
-        } else {
-          res.status(404).send({
-            success: false,
-            message: "Order not found or no change made",
-          });
-        }
-      } catch (error) {
-        console.error("Error updating order:", error);
-        res.status(500).send({ message: "Internal Server Error" });
-      }
+    // Get All Users
+    app.get("/users", verifyFirebaseToken, verifyAdmin, async (req, res) => {
+      const result = await userCollection.find().toArray();
+      res.send(result);
     });
 
     // --- 1. User Registration / Save (Default Role: User) ---
@@ -495,36 +554,40 @@ async function run() {
     });
 
     // --- 2. Make Admin
-    app.patch("/users/admin/:id",  async (req, res) => {
-      const id = req.params.id;
-      const filter = { _id: new ObjectId(id) };
-      const updatedDoc = {
-        $set: {
-          role: "admin",
-        },
-      };
-      const result = await userCollection.updateOne(filter, updatedDoc);
-      res.send(result);
-    });
+    app.patch(
+      "/users/admin/:id",
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const filter = { _id: new ObjectId(id) };
+        const updatedDoc = {
+          $set: {
+            role: "admin",
+          },
+        };
+        const result = await userCollection.updateOne(filter, updatedDoc);
+        res.send(result);
+      },
+    );
 
     // --- 3. Remove Admin (Demote back to User) ---
-    app.patch("/users/user/:id", async (req, res) => {
-      const id = req.params.id;
-      const filter = { _id: new ObjectId(id) };
-      const updatedDoc = {
-        $set: {
-          role: "user",
-        },
-      };
-      const result = await userCollection.updateOne(filter, updatedDoc);
-      res.send(result);
-    });
-
-    // --- 4. Get All Users
-    app.get("/users", async (req, res) => {
-      const result = await userCollection.find().toArray();
-      res.send(result);
-    });
+    app.patch(
+      "/users/user/:id",
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const filter = { _id: new ObjectId(id) };
+        const updatedDoc = {
+          $set: {
+            role: "user",
+          },
+        };
+        const result = await userCollection.updateOne(filter, updatedDoc);
+        res.send(result);
+      },
+    );
 
     // Search email and make admin
 
@@ -559,22 +622,165 @@ async function run() {
     // pyment intern stripe
 
     app.post("/create-payment-intent", async (req, res) => {
-      const { price } = req.body;
+      try {
+        const { items, couponCode, district } = req.body;
 
-      const paymentIntent = await stripe.paymentIntents.create({
-        amount: Math.round(price * 100),
-        currency: "usd",
-        payment_method_types: ["card"],
-      });
+        let subtotal = 0;
 
-      res.send({ clientSecret: paymentIntent.client_secret });
+        // 🔥 REAL PRICE FROM DB
+        for (const item of items) {
+          const cleanId = item.productId.split("-")[0];
+          if (!ObjectId.isValid(cleanId)) continue;
+
+          const product = await productsCollection.findOne({
+            _id: new ObjectId(cleanId),
+          });
+
+          if (product) {
+            subtotal += product.price * (item.quantity || 1);
+          }
+        }
+
+        let finalAmount = subtotal;
+
+        let coupon = null;
+
+        if (couponCode) {
+          coupon = await couponCollection.findOne({
+            code: couponCode.trim().toUpperCase(),
+            isActive: true,
+          });
+        }
+
+        let discount = 0;
+
+        if (coupon && subtotal >= (coupon.minPurchase || 0)) {
+          if (coupon.discountType === "fixed") {
+            discount = coupon.discountValue;
+          } else if (coupon.discountType === "percent") {
+            discount = (subtotal * coupon.discountValue) / 100;
+          }
+
+          // 🛡️ never allow over-discount
+          discount = Math.min(discount, subtotal);
+        }
+
+        finalAmount -= discount;
+
+        const shipping = district === "Dhaka" ? 80 : 120;
+        finalAmount += shipping;
+
+        const amountInCents = Math.round(finalAmount * 100);
+
+        if (amountInCents < 50) {
+          return res
+            .status(400)
+            .send({ message: "Amount is too low for card payment" });
+        }
+
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: amountInCents,
+          currency: "usd",
+          payment_method_types: ["card"],
+        });
+
+        res.send({ clientSecret: paymentIntent.client_secret });
+      } catch (error) {
+        console.error("Stripe Error:", error);
+        res.status(500).send({ message: "Server Error" });
+      }
     });
 
-    // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!",
+    app.get(
+      "/admin-stats",
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const totalUsers = await userCollection.estimatedDocumentCount();
+          const totalProducts =
+            await productsCollection.estimatedDocumentCount();
+          const totalOrders = await orderCollection.estimatedDocumentCount();
+          const totalCoupons = await couponCollection.estimatedDocumentCount();
+          const totalCartItems = await cartCollection.estimatedDocumentCount();
+
+          const products = await productsCollection
+            .find({}, { projection: { category: 1 } })
+            .toArray();
+          const categoryCounts = products.reduce((acc, curr) => {
+            const cat = curr.category || "Others";
+            acc[cat] = (acc[cat] || 0) + 1;
+            return acc;
+          }, {});
+
+          const categoryData = Object.keys(categoryCounts).map((key) => ({
+            name: key,
+            value: categoryCounts[key],
+          }));
+
+          const allOrders = await orderCollection.find().toArray();
+
+          let totalRevenue = 0;
+          let successOrders = 0;
+          let pendingOrders = 0;
+          let paidOrders = 0;
+          let unpaidOrders = 0;
+
+          allOrders.forEach((order) => {
+            if (order.paymentStatus === "paid") {
+              totalRevenue += parseFloat(order.totalAmount || 0);
+              paidOrders++;
+            } else {
+              unpaidOrders++;
+            }
+
+            if (
+              order.deliveryStatus === "delivered" ||
+              order.deliveryStatus === "confirmed"
+            ) {
+              successOrders++;
+            } else if (order.deliveryStatus === "pending") {
+              pendingOrders++;
+            }
+          });
+
+          res.send({
+            summary: {
+              totalUsers,
+              totalProducts,
+              totalOrders,
+              totalRevenue: parseFloat(totalRevenue.toFixed(2)),
+              totalCoupons,
+              totalCartItems,
+              successOrders,
+              pendingOrders,
+              paidOrders,
+              unpaidOrders,
+            },
+            categoryData,
+
+            chartData: [
+              { name: "Total Orders", count: totalOrders },
+              { name: "Success", count: successOrders },
+              { name: "Pending", count: pendingOrders },
+              { name: "In Cart", count: totalCartItems },
+            ],
+          });
+        } catch (error) {
+          console.error("Admin Stats Error:", error);
+          res
+            .status(500)
+            .send({ message: "Internal Server Error", error: error.message });
+        }
+      },
     );
+
+    // Send a ping to confirm a successful connection
+
+    // await client.db("admin").command({ ping: 1 });
+    // console.log(
+    //   "Pinged your deployment. You successfully connected to MongoDB!",
+    // );
   } finally {
   }
 }
